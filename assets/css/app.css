@@ -1,0 +1,98 @@
+@import "tailwindcss/base";
+@import "tailwindcss/components";
+@import "tailwindcss/utilities";
+
+/* This file is for your main application CSS */
+:root {
+  --orb-size: 200px;
+  --color1: #a25eff;
+  --color2: #ff5e9c;
+  --color3: #ffffff;
+  --speed: 3;
+}
+
+/* Container holds the orb and ensures correct sizing */
+.orb-container {
+  position: relative;
+  width: var(--orb-size);
+  height: var(--orb-size);
+  margin: 20px 0;
+}
+
+/* The “orb” has multiple nested gradients that rotate at different speeds */
+.orb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  /* A little blur gives that glowing look */
+  filter: blur(10px);
+  /* First radial gradient */
+  background: radial-gradient(
+    circle at 40% 40%,
+    var(--color1),
+    transparent 60%
+  );
+  animation: swirl calc(var(--speed) * 1s) linear infinite;
+}
+
+/* Second layer (pseudo-element before) */
+.orb::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 60% 60%,
+    var(--color2),
+    transparent 60%
+  );
+  animation: swirl2 calc(var(--speed) * 1.5s) linear infinite;
+}
+
+/* Third layer (pseudo-element after) */
+.orb::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 50% 50%,
+    var(--color3),
+    transparent 60%
+  );
+  animation: swirl3 calc(var(--speed) * 2s) linear infinite;
+}
+
+@keyframes swirl {
+  0% {
+    transform: scale(1) rotate(0deg);
+  }
+  100% {
+    transform: scale(1) rotate(360deg);
+  }
+}
+@keyframes swirl2 {
+  0% {
+    transform: scale(1.1) rotate(0deg);
+  }
+  100% {
+    transform: scale(1.1) rotate(-360deg);
+  }
+}
+@keyframes swirl3 {
+  0% {
+    transform: scale(1.2) rotate(0deg);
+  }
+  100% {
+    transform: scale(1.2) rotate(360deg);
+  }
+}
