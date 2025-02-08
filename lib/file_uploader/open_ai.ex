@@ -3,6 +3,60 @@
 defmodule FileUploader.OpenAI do
   @chat_completions_url "https://api.openai.com/v1/chat/completions"
 
+
+  def first_transcript_prompt_template(user_transcript) do
+    system_prompt = """
+    Act as a professional video/podcast editor. Your task is to create timestamps and titles for transcript chunks. Follow ALL rules strictly.
+    You must not add any explanations, apologies, or any text other than the exact required segment list.
+    If you have any uncertainty, reflect that in the titles or the segmentation, but do not produce extra commentary.
+
+    Rules for Timestamps:
+    - If HH = 0, convert [HH:MM:SS] → [MM:SS].
+    - If HH > 0, preserve [HH:MM:SS].
+    """
+
+    user_prompt = """
+    I have a video transcript chunk covering the time range [00:00–10:00].
+
+    **Your Tasks**:
+    1. Identify the logical segments within this transcript chunk (ideally 3–5 segments).
+       - If fewer than 3 segments are present, output only the available segments.
+       - If more than 5 segments are evident, choose the five most significant based on topic changes.
+
+    2. For each segment, provide:
+       - The exact timestamp from the transcript.
+       - A concise title (3–8 words max).
+       - Format: [MM:SS] Title  (or [HH:MM:SS] Title if hour > 0).
+
+    3. Output ONLY the formatted list of segments. NO extra text.
+
+    **Rules**:
+    - Use ONLY the timestamps that appear exactly in the transcript; do not approximate.
+    - Split segments at topic shifts, speaker changes, or explicit breaks.
+    - No commentary, no additional explanations.
+
+    --
+    **Example user input transcript chunk**:
+    [00:00:00] "Now, let’s dive into case studies of AI bias..."
+    [00:08:45] "Here’s an example from healthcare..."
+    [... rest of chunk ...]
+    --
+
+    --
+    **Example of the desired output**:
+    [00:00] Case Studies of AI Bias
+    [03:15] Ad Break
+    [08:45] Healthcare Examples
+    --
+
+    **User Transcript Chunk (00:00–10:00)**:
+    #{user_transcript}
+    """
+
+    {system_prompt, user_prompt}
+  end
+
+
   def chat_completion(request) do
     Req.post(@chat_completions_url,
       json: request,
@@ -24,54 +78,6 @@ defmodule FileUploader.OpenAI do
   defp api_key() do
     Application.get_env(:file_uploader, :openai)[:api_key]
   end
-
-  first_transcript_prompt = """
-  system_prompt:
-  Act as a professional video/podcast editor. Your task is to create timestamps and titles for transcript chunks. Follow ALL rules strictly.
-  You must not add any explanations, apologies, or any text other than the exact required segment list.
-  If you have any uncertainty, reflect that in the titles or the segmentation, but do not produce extra commentary.
-
-  Rules for Timestamps:
-  - If HH = 0, convert [HH:MM:SS] → [MM:SS].
-  - If HH > 0, preserve [HH:MM:SS].
-
-  user_prompt:
-  I have a video transcript chunk covering the time range [00:00–10:00].
-
-  **Your Tasks**:
-  1. Identify the logical segments within this transcript chunk (ideally 3–5 segments).
-     - If fewer than 3 segments are present, output only the available segments.
-     - If more than 5 segments are evident, choose the five most significant based on topic changes.
-
-  2. For each segment, provide:
-     - The exact timestamp from the transcript.
-     - A concise title (3–8 words max).
-     - Format: [MM:SS] Title  (or [HH:MM:SS] Title if hour > 0).
-
-  3. Output ONLY the formatted list of segments. NO extra text.
-
-  **Rules**:
-  - Use ONLY the timestamps that appear exactly in the transcript; do not approximate.
-  - Split segments at topic shifts, speaker changes, or explicit breaks.
-  - No commentary, no additional explanations.
-
-  --
-  **Example user input transcript chunk**:
-  [00:00:00] "Now, let’s dive into case studies of AI bias..."
-  [00:08:45] "Here’s an example from healthcare..."
-  [... rest of chunk ...]
-  --
-
-  --
-  **Example of the desired output**:
-  [00:00] Case Studies of AI Bias
-  [03:15] Ad Break
-  [08:45] Healthcare Examples
-  --
-
-  **User Transcript Chunk (00:00–10:00)**:
-  [PASTE_FIRST_VTT_TRANSCRIPT_CHUNK_GOES_HERE]
-  """
 
     second_or_nth_transcript_prompt = """
 system_prompt:

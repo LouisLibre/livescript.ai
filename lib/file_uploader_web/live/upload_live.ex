@@ -9,6 +9,8 @@ defmodule FileUploaderWeb.UploadLive do
      |> assign(:transcript_segments, [])
      |> assign(:visible_transcript_segments, [])
      |> assign(:active_tab, "overview")
+     |> assign(:milestones_printed, 0) # Tracks how many 10-min milestones we have already flushed
+     |> assign(:last_flushed_time, 0)  # The highest second mark (e.g. 125 seconds) we have flushed up to
      |> allow_upload(:file,
        accept: :any,
        max_file_size: 524_288_000,
@@ -32,15 +34,31 @@ defmodule FileUploaderWeb.UploadLive do
     }
   end
 
+
   @impl true
   def handle_info({:transcript, tokens, segment_number}, socket) do
     IO.inspect("FileUploaderWeb.UploadLive handle_info {:transcript, tokens, segment_number: #{segment_number}")
 
-    socket = Enum.reduce(tokens, socket, fn token, acc_socket ->
+    # The incoming tokens may be empty, but we need at least one token to start the process
+    # and not break the logic for consecutive segments.
+    # TODO: Fix the results of this on the UI, just don't show empty text segments.
+    tokens_with_placeholder =
+      case tokens do
+        [] -> [%{text: "", start_timestamp_seconds: 0.0}]
+        _  -> tokens
+      end
+
+    socket = Enum.reduce(tokens_with_placeholder, socket, fn token, acc_socket ->
       %{text: text, start_timestamp_seconds: start_timestamp_seconds} = token
       add_segment(acc_socket, segment_number, text, start_timestamp_seconds)
     end)
     #socket = add_segment(socket, segment_number, text)
+
+    if socket.assigns.count > 0 and max_chunk_id(socket.assigns.transcript_segments) == socket.assigns.count - 1 do
+      socket = flush_final_chunk(socket)
+      # Possibly log or set some final state:
+      IO.puts("ALL segments have been received and flushed!")
+    end
 
     if segment_number == 0 do
       {:noreply,
@@ -184,11 +202,11 @@ defmodule FileUploaderWeb.UploadLive do
             <div class={if @active_tab == "transcript", do: "block", else: "hidden"}>
                 <div class="space-y-6">
                     <div class="space-y-2" :for={seg <- @visible_transcript_segments}>
-                      <div data-id={"#{seg.chunk_id}"} class="group flex gap-2">
+                      <div data-id={"#{seg.chunk_id}"} class={"group flex gap-2 #{if seg.text == "", do: "hidden", else: ""}"}>
                         <button
                           class="text-sm text-gray-500 hover:text-gray-700"
                         >
-                          {seg.text_start_time}
+                          {seg.text_start_time_formatted}
                         </button>
                         <p
                           id={"text-#{seg.chunk_id}"}
@@ -196,7 +214,7 @@ defmodule FileUploaderWeb.UploadLive do
                           data-start-time={seg.text_start_time}
                           class="text-sm group-hover:text-gray-900 transition-colors hover:bg-yellow-100 hover:cursor-pointer"
                         >
-                          <%= seg.text %>
+                          { seg.text}
                         </p>
                       </div>
                     </div>
@@ -224,27 +242,119 @@ defmodule FileUploaderWeb.UploadLive do
   end
 
   defp add_segment(socket, index, text, text_start_time) do
-    # 1) Add to the “all” segments
+    # 1) Build the new segment
+    text_start_time = trunc(text_start_time + (index * 20))
+
+    new_segment = %{
+      chunk_id: index,
+      text: text,
+      text_start_time: text_start_time,
+      text_start_time_formatted: TimeFormatter.format_seconds_web(text_start_time)
+    }
+
+    # 2) Add the new segment to the list, ( and remove duplicates ( maybe not needed ) )
     all_segments = socket.assigns.transcript_segments
-    new_segment = %{chunk_id: index, text: text, text_start_time: text_start_time + ((index) * 30)}
     updated = [new_segment | all_segments]
     |> Enum.uniq_by(& &1.text_start_time)
 
     # 2) Sort by index
     sorted = Enum.sort_by(updated, & &1.text_start_time)
 
-    # 3) Find the largest contiguous block from index=1
+    # 3) Keep only contiguous from chunk_id=0..N
     max_consecutive =
       sorted
       |> Enum.map(& &1.chunk_id)
       |> largest_consecutive_seq()
 
-    # 4) Keep only segments with id <= max_consecutive
     visible = Enum.filter(sorted, &(&1.chunk_id <= max_consecutive))
+
+    # 4) Flush every 10 minutes
+    socket =
+      case List.last(visible) do
+        nil -> socket
+        last_segment -> maybe_flush(socket, visible, last_segment.text_start_time)
+      end
 
     socket
     |> assign(:transcript_segments, sorted)
     |> assign(:visible_transcript_segments, visible)
+  end
+
+  defp maybe_flush(socket, visible_segments, last_visible_time) do
+    IO.puts("maybe_flush: last_visible_time: #{last_visible_time}")
+    old_milestones = socket.assigns.milestones_printed
+    new_milestones = div(last_visible_time, 600)
+
+    if new_milestones > old_milestones do
+      milestone_range = (old_milestones + 1)..new_milestones
+
+      last_flushed_time = for milestone <- milestone_range, reduce: 0 do
+        _acc ->
+          boundary = milestone * 600
+          process_transcript_chunk(socket, visible_segments, socket.assigns.last_flushed_time, boundary, false)
+          boundary
+      end
+
+      socket
+      |> assign(:milestones_printed, new_milestones)
+      |> assign(:last_flushed_time, last_flushed_time)
+    else
+      socket
+    end
+
+  end
+
+  defp flush_final_chunk(socket) do
+    IO.puts("flush_final_chunk")
+    final_time =
+      socket.assigns.transcript_segments
+      |> Enum.map(& &1.text_start_time)
+      |> Enum.max(fn -> 0 end)  # fallback to 0 if no segments
+
+    last_flushed_time = socket.assigns.last_flushed_time
+
+    if final_time > last_flushed_time do
+      # TODO: let process_transcript_chunk know this is the final chunk
+      process_transcript_chunk(socket, socket.assigns.transcript_segments, last_flushed_time, final_time, true)
+      IO.puts("Flushed final chunk from ~#{last_flushed_time} to ~#{final_time} seconds.")
+
+      socket
+      |> assign(:last_flushed_time, final_time)
+    else
+      socket
+    end
+  end
+
+  defp process_transcript_chunk(socket, segments, from_seconds, to_seconds, is_final) do
+    IO.puts("process_transcript_chunk: from #{from_seconds} to #{to_seconds}")
+    # Get segments that fall within our time window
+    chunk_segments =
+      segments
+      |> Enum.filter(fn seg ->
+        seg.text_start_time >= from_seconds and seg.text_start_time <= to_seconds
+      end)
+
+    # Joins all segment texts into the following format
+    # [HH:MM:SS] Transcript text
+    # [HH:MM:SS] 2nd Transcript text
+    output = chunk_segments
+    |> Enum.map_join("\n", & "#{TimeFormatter.format_seconds_llm(&1.text_start_time)} #{&1.text}")
+
+    # LLM_REQUEST: Generate the LLM prompt and response
+    {system_prompt, user_prompt} = FileUploader.OpenAI.first_transcript_prompt_template(output)
+    llm_messages = [
+      %{role: "system", content: system_prompt},
+      %{role: "user", content: user_prompt}
+    ]
+    {:ok, %{body: llm_response}} = FileUploader.OpenAI.chat_completion(%{
+      model: "gpt-4o-mini",
+      messages: llm_messages
+    })
+
+    # Output the chunk with timestamp information
+    IO.puts("FLUSHING partial transcript from #{from_seconds} to #{to_seconds} seconds:")
+    IO.inspect(llm_messages)
+    IO.inspect(llm_response)
   end
 
    # Given a list of indexes (already sorted), find the largest consecutive run

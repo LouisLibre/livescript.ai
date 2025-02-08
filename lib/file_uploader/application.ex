@@ -7,7 +7,10 @@ defmodule FileUploader.Application do
 
   @impl true
   def start(_type, _args) do
-
+    #{:ok, whisper} = Bumblebee.load_model({:hf, "openai/whisper-medium"})
+    #{:ok, featurizer} = Bumblebee.load_featurizer({:hf, "openai/whisper-medium"})
+    #{:ok, tokenizer} = Bumblebee.load_tokenizer({:hf, "openai/whisper-medium"})
+    #{:ok, generation_config} = Bumblebee.load_generation_config({:hf, "openai/whisper-medium"})
     {:ok, whisper} = Bumblebee.load_model({:hf, "openai/whisper-tiny"})
     {:ok, featurizer} = Bumblebee.load_featurizer({:hf, "openai/whisper-tiny"})
     {:ok, tokenizer} = Bumblebee.load_tokenizer({:hf, "openai/whisper-tiny"})
