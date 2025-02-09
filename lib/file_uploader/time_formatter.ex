@@ -1,10 +1,12 @@
 defmodule TimeFormatter do
-  def format_seconds_llm(total_seconds) do
+  def format_seconds_llm(total_seconds, with_brackets \\ true) do
     hours = div(total_seconds, 3600)
     minutes = div(rem(total_seconds, 3600), 60)
     seconds = rem(total_seconds, 60)
 
-    "[#{pad(hours)}:#{pad(minutes)}:#{pad(seconds)}]"
+    formatted = "#{pad(hours)}:#{pad(minutes)}:#{pad(seconds)}"
+
+    if with_brackets, do: "[#{formatted}]", else: formatted
   end
 
   def format_seconds_web(total_seconds) do
