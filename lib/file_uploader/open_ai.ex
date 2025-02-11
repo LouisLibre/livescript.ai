@@ -143,6 +143,56 @@ defmodule FileUploader.OpenAI do
     {system_prompt, user_prompt}
   end
 
+  def merge_transcript_prompt_template(previous_timestamps) do
+    system_prompt = """
+    You are a precise video/podcast timestamp editor that MUST follow these rules exactly:
+
+    1. OUTPUT FORMAT RULES
+    - You MUST output exactly 12 or fewer segments
+    - Format each line as: [MM:SS] Title or [HH:MM:SS] Title (if over 1 hour)
+    - Output ONLY the timestamp list with NO other text
+    - Sort all segments chronologically
+
+    2. MANDATORY CONSOLIDATION RULES
+    If input exceeds 12 segments, you MUST apply these rules in order:
+
+    a) Topic Merge Rule
+    - MUST merge segments discussing related topics
+    - Example: [40:00] Dental Business and [41:00] Dental Marketing
+      → [40:00] Dental Business Strategy
+
+    b) Time Proximity Rule
+    - MUST merge segments within 5 minutes unless they cover completely different topics
+    - Example: [19:50] Focus Discussion and [20:00] Business Philosophy
+      → [19:50] Focus and Business Philosophy
+
+    c) Broader Category Rule
+    - If still over 12 segments, merge into broader thematic categories
+    - Example: Multiple business ideas → [39:40] Innovative Business Concepts
+    - Keep timestamp of earliest segment in merged group
+
+    3. TITLE CREATION RULES
+    - Merged segment titles MUST reflect all major topics covered
+    - Use ampersands (&) to join major themes
+    - Maximum title length: 60 characters
+
+    4. QUALITY CHECKS
+    Before outputting, verify:
+    - Exactly 12 or fewer segments
+    - All timestamps in correct format
+    - No gaps in important content
+    - Chronological order
+    - No overlapping segments
+    - Clear, descriptive titles
+
+    If you break ANY of these rules, your output is considered FAILED and INVALID.
+    """
+
+    user_prompt = "#{previous_timestamps}"
+
+    {system_prompt, user_prompt}
+  end
+
   def chat_completion(request) do
     Req.post(@chat_completions_url,
       json: request,
@@ -164,71 +214,6 @@ defmodule FileUploader.OpenAI do
   defp api_key() do
     Application.get_env(:file_uploader, :openai)[:api_key]
   end
-
-  merge_prompt = """
-  system_prompt:
-  Act as a professional video/podcast editor. Your task is to merge previously generated timestamps/titles from multiple transcript chunks into a single cohesive list. Follow ALL rules strictly.
-  You must not add any explanations, apologies, or any text other than the exact required segment list.
-  If you have any uncertainty, reflect that in the titles or segmentation, but do not produce extra commentary.
-
-  Rules for Timestamps:
-  - If HH = 0, convert [HH:MM:SS] → [MM:SS].
-  - If HH > 0, preserve [HH:MM:SS].
-
-  user_prompt:
-  You have timestamps and titles from several transcript chunks. Merge them into one final timeline of segments. The final output should:
-
-  1. **Combine** all segments from the chunks **in chronological order**, covering the full range from the first chunk's start time to the final chunk's end time.
-
-  2. **Detect continuity**:
-    - If a segment from one chunk directly continues in the next chunk (e.g., same topic, labeled "Part 2"), either merge them or clearly label them to reflect the continuation (e.g., "Healthcare Examples (Part 2)").
-
-  3. **Resolve any overlaps or inconsistencies.**:
-    - If two segments share nearly the same timestamps/titles, merge or remove duplicates so the final list has no redundancy.
-
-  4. **Aim for a reasonable total number of segments** (around 6–12):
-    - If there are many short segments with similar or related topics, combine them into broader chapters.
-
-  5. **Maintain format**:
-    - For each final segment, use `[MM:SS] Title` (or `[HH:MM:SS] Title` if hour > 0).
-    - Do **not** invent or approximate timestamps; use only those given.
-
-  6. **Output ONLY** the merged list of segments (no extra text).
-
-  ---
-  ### Example
-
-  #### Example Input
-  ```
-  Previously Generated Segments:
-  Chunk 1 ([00:00–10:00]):
-  [00:00] Introduction to AI Bias
-  [03:12] Early Healthcare Examples
-  [07:50] Modern Healthcare Examples
-
-  Chunk 2 ([10:00–20:00]):
-  [10:00] Modern Healthcare Examples (Part 2)
-  [14:20] New Speaker’s Perspective
-  [18:05] Ad Break
-  ```
-
-  #### Example Output
-  ```
-  [00:00] Introduction to AI Bias
-  [03:12] Early Healthcare Examples
-  [07:50] Modern Healthcare Examples
-  [14:20] New Speaker’s Perspective
-  [18:05] Ad Break
-  ```
-
-  (Notice how the segments are merged chronologically, no duplicates are created, and continuation is handled appropriately)
-  ---
-
-  Now, below is the list of actual segments that need to be merged. Remember, the final output should follow the same format:
-
-  All Previously Generated Segments:
-  [PASTE_ALL_SEGMENT_LISTS_HERE]
-  """
 
 
 end

@@ -106,8 +106,18 @@ defmodule FileUploaderWeb.UploadLive do
   end
 
   def parse_timestamp(time_str) do
-    [minutes, seconds] = String.split(time_str, ":")
-    String.to_integer(minutes) * 60 + String.to_integer(seconds)
+    parts = String.split(time_str, ":")
+
+    case parts do
+      [hours, minutes, seconds] ->
+        String.to_integer(hours) * 3600 +
+        String.to_integer(minutes) * 60 +
+        String.to_integer(seconds)
+
+      [minutes, seconds] ->
+        String.to_integer(minutes) * 60 +
+        String.to_integer(seconds)
+    end
   end
 
   @impl true
@@ -204,28 +214,27 @@ defmodule FileUploaderWeb.UploadLive do
                   id="timestamps-skeleton"
                   class="space-y-2"
                 >
-                  <%= for timestamp_group <- @visible_timestamps do %>
-                    <div class="space-y-2">
-                      <%= for entry <- String.split(timestamp_group, "\n") do %>
-                        <%= if Regex.match?(~r/\[([\d:]+)\](.+)/, entry) do %>
-                          <% [_, time, text] = Regex.run(~r/\[([\d:]+)\](.+)/, entry) %>
-                          <div class="group flex gap-2">
-                            <button class="text-sm text-gray-500 hover:text-gray-700">
-                              [<%= time %>]
-                            </button>
-                            <p
-                              id={"text-#{parse_timestamp(time)}"}
-                              phx-hook="SeekOnClick"
-                              data-start-time={parse_timestamp(time)}
-                              class="text-sm group-hover:text-gray-900 transition-colors hover:bg-yellow-100 hover:cursor-pointer"
-                            >
-                              <%= String.trim(text) %>
-                            </p>
-                          </div>
-                        <% end %>
-                      <% end %>
+                <%= for timestamp_group <- @visible_timestamps do %>
+                <div class="space-y-2">
+                <%= for entry <- String.split(timestamp_group, "\n") do %>
+                  <%= if Regex.match?(~r/\[([\d:]+)\](.+)/, entry) do %>
+                    <% [_, time, text] = Regex.run(~r/\[([\d:]+)\](.+)/, entry) %>
+                    <div class="group flex gap-2">
+                      <button class="text-sm text-gray-500 hover:text-gray-700">
+                        [<%= time %>]
+                      </button>
+                      <p id={"text-#{parse_timestamp(time)}"}
+                          phx-hook="SeekOnClick"
+                          data-start-time={parse_timestamp(time)}
+                          class="text-sm group-hover:text-gray-900 transition-colors hover:bg-yellow-100 hover:cursor-pointer">
+                        <%= String.trim(text) %>
+                      </p>
                     </div>
                   <% end %>
+                <% end %>
+                </div>
+                <% end %>
+
                   <skeleton-loader class={
                       if @count > 0 and max_chunk_id(@transcript_segments) == @count - 1,
                         do: "hidden",
@@ -367,9 +376,36 @@ defmodule FileUploaderWeb.UploadLive do
       current_visible_timestamps = socket.assigns[:visible_timestamps] || []
       new_visible_timestamps = current_visible_timestamps ++ [timestamps]
 
+      final_visible_timestamps =
+        if socket.assigns.count > 0 and
+           max_chunk_id(socket.assigns.transcript_segments) == socket.assigns.count - 1 do
+           {system_prompt, user_prompt} = FileUploader.OpenAI.merge_transcript_prompt_template(new_visible_timestamps)
+           llm_messages = [
+            %{role: "system", content: system_prompt},
+            %{role: "user", content: user_prompt}
+          ]
+
+          {:ok, %{body: llm_response}} =
+            FileUploader.OpenAI.chat_completion(%{
+              model: "gpt-4o-mini",
+              messages: llm_messages
+            })
+
+          %{
+            "choices" => [
+              %{"message" => %{"content" => content}}
+            ]
+          } = llm_response
+          IO.inspect(llm_messages)
+          IO.inspect(llm_response)
+          [content]
+        else
+          new_visible_timestamps
+        end
+
       socket
       |> assign(:last_flushed_time, final_time)
-      |> assign(:visible_timestamps, new_visible_timestamps)
+      |> assign(:visible_timestamps, final_visible_timestamps)
     else
       socket
     end
@@ -422,6 +458,12 @@ defmodule FileUploaderWeb.UploadLive do
 
           {0, false} ->
             IO.puts("Processing first chunk of the transcript.")
+            first_start = TimeFormatter.format_seconds_llm(List.first(chunk_segments).text_start_time, false)
+            last_start  = TimeFormatter.format_seconds_llm(List.last(chunk_segments).text_start_time, false)
+            FileUploader.OpenAI.first_transcript_prompt_template(output, first_start, last_start)
+
+          {_, true} ->
+            IO.puts("Processing final chunk of the transcript.")
             first_start = TimeFormatter.format_seconds_llm(List.first(chunk_segments).text_start_time, false)
             last_start  = TimeFormatter.format_seconds_llm(List.last(chunk_segments).text_start_time, false)
             FileUploader.OpenAI.first_transcript_prompt_template(output, first_start, last_start)
