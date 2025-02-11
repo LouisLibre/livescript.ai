@@ -140,11 +140,36 @@ defmodule FileUploaderWeb.UploadLive do
                 <div class="border border-gray-200 rounded-lg space-y-4 bg-white shadow-sm h-[calc(100vh-24rem-2rem)] flex flex-col">
                 <div class="w-full bg-gray-100 border-b border-gray-200 flex bg-gray-50">
                   <button class=' py-2 px-4 text-sm font-medium bg-gray-50'>
-                    Summary
+                    Timestamps
                   </button>
                 </div>
-                  <skeleton-loader class="px-3 w-1/2" height="24px"></skeleton-loader>
-                  <skeleton-loader class="px-3 pr-6" count="3"></skeleton-loader>
+
+                  <%= for timestamp_group <- @visible_timestamps do %>
+                    <div class="space-y-2">
+                      <%= for entry <- String.split(timestamp_group, "\n") do %>
+                        <%= if Regex.match?(~r/\[([\d:]+)\](.+)/, entry) do %>
+                          <% [_, time, text] = Regex.run(~r/\[([\d:]+)\](.+)/, entry) %>
+                          <div class="group flex gap-2">
+                            <button class="text-sm text-gray-500 hover:text-gray-700">
+                              [<%= time %>]
+                            </button>
+                            <p id={"text-#{parse_timestamp(time)}"}
+                                phx-hook="SeekOnClick"
+                                data-start-time={parse_timestamp(time)}
+                                class="text-sm group-hover:text-gray-900 transition-colors hover:bg-yellow-100 hover:cursor-pointer">
+                              <%= String.trim(text) %>
+                            </p>
+                          </div>
+                        <% end %>
+                      <% end %>
+                    </div>
+                  <% end %>
+
+                  <skeleton-loader class={
+                  if @count > 0 and max_chunk_id(@transcript_segments) == @count - 1,
+                    do: "hidden",
+                    else: "px-3 pr-6"
+                  } count="3"></skeleton-loader>
 
                 </div>
           </div>
@@ -166,13 +191,6 @@ defmodule FileUploaderWeb.UploadLive do
                 Transcript
               </button>
 
-              <button
-              phx-click="set_tab"
-              phx-value-tab="timestamps"
-              class={"flex-1 py-2 px-4 text-sm font-medium " <>
-              if @active_tab == "timestamps", do: "bg-white", else: ""}>
-              Timestamps
-              </button>
             </div>
 
             <div class="flex-1 overflow-hidden flex flex-col">
@@ -205,42 +223,6 @@ defmodule FileUploaderWeb.UploadLive do
                   <p class="mt-2"><%= @message %></p>
 
                 </.form>
-              </div>
-            </div>
-
-            <div class={if @active_tab == "timestamps", do: "block", else: "hidden"}>
-              <div class="space-y-6">
-                <div
-                  id="timestamps-skeleton"
-                  class="space-y-2"
-                >
-                <%= for timestamp_group <- @visible_timestamps do %>
-                <div class="space-y-2">
-                <%= for entry <- String.split(timestamp_group, "\n") do %>
-                  <%= if Regex.match?(~r/\[([\d:]+)\](.+)/, entry) do %>
-                    <% [_, time, text] = Regex.run(~r/\[([\d:]+)\](.+)/, entry) %>
-                    <div class="group flex gap-2">
-                      <button class="text-sm text-gray-500 hover:text-gray-700">
-                        [<%= time %>]
-                      </button>
-                      <p id={"text-#{parse_timestamp(time)}"}
-                          phx-hook="SeekOnClick"
-                          data-start-time={parse_timestamp(time)}
-                          class="text-sm group-hover:text-gray-900 transition-colors hover:bg-yellow-100 hover:cursor-pointer">
-                        <%= String.trim(text) %>
-                      </p>
-                    </div>
-                  <% end %>
-                <% end %>
-                </div>
-                <% end %>
-
-                  <skeleton-loader class={
-                      if @count > 0 and max_chunk_id(@transcript_segments) == @count - 1,
-                        do: "hidden",
-                        else: "px-3"
-                      } count="3"></skeleton-loader>
-                </div>
               </div>
             </div>
 
