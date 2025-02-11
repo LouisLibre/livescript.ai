@@ -8,6 +8,7 @@ defmodule FileUploaderWeb.UploadLive do
      |> assign(message: "", count: 0)
      |> assign(:transcript_segments, [])
      |> assign(:visible_transcript_segments, [])
+     |> assign(:visible_timestamps, [])
      |> assign(:active_tab, "overview")
      |> assign(:milestones_printed, 0) # Tracks how many 10-min milestones we have already flushed
      |> assign(:last_flushed_time, 0)  # The highest second mark (e.g. 125 seconds) we have flushed up to
@@ -54,10 +55,14 @@ defmodule FileUploaderWeb.UploadLive do
     end)
     #socket = add_segment(socket, segment_number, text)
 
-    if socket.assigns.count > 0 and max_chunk_id(socket.assigns.transcript_segments) == socket.assigns.count - 1 do
+    socket = if socket.assigns.count > 0 and
+             max_chunk_id(socket.assigns.transcript_segments) == socket.assigns.count - 1 do
       socket = flush_final_chunk(socket)
       # Possibly log or set some final state:
       IO.puts("ALL segments have been received and flushed!")
+      socket
+    else
+      socket
     end
 
     if segment_number == 0 do
@@ -98,6 +103,11 @@ defmodule FileUploaderWeb.UploadLive do
       [] -> 0
       segs -> segs |> Enum.map(& &1.chunk_id) |> Enum.max()
     end
+  end
+
+  def parse_timestamp(time_str) do
+    [minutes, seconds] = String.split(time_str, ":")
+    String.to_integer(minutes) * 60 + String.to_integer(seconds)
   end
 
   @impl true
@@ -194,7 +204,33 @@ defmodule FileUploaderWeb.UploadLive do
                   id="timestamps-skeleton"
                   class="space-y-2"
                 >
-                  <skeleton-loader class="px-3" count="3"></skeleton-loader>
+                  <%= for timestamp_group <- @visible_timestamps do %>
+                    <div class="space-y-2">
+                      <%= for entry <- String.split(timestamp_group, "\n") do %>
+                        <%= if Regex.match?(~r/\[([\d:]+)\](.+)/, entry) do %>
+                          <% [_, time, text] = Regex.run(~r/\[([\d:]+)\](.+)/, entry) %>
+                          <div class="group flex gap-2">
+                            <button class="text-sm text-gray-500 hover:text-gray-700">
+                              [<%= time %>]
+                            </button>
+                            <p
+                              id={"text-#{parse_timestamp(time)}"}
+                              phx-hook="SeekOnClick"
+                              data-start-time={parse_timestamp(time)}
+                              class="text-sm group-hover:text-gray-900 transition-colors hover:bg-yellow-100 hover:cursor-pointer"
+                            >
+                              <%= String.trim(text) %>
+                            </p>
+                          </div>
+                        <% end %>
+                      <% end %>
+                    </div>
+                  <% end %>
+                  <skeleton-loader class={
+                      if @count > 0 and max_chunk_id(@transcript_segments) == @count - 1,
+                        do: "hidden",
+                        else: "px-3"
+                      } count="3"></skeleton-loader>
                 </div>
               </div>
             </div>
@@ -288,16 +324,25 @@ defmodule FileUploaderWeb.UploadLive do
     if new_milestones > old_milestones do
       milestone_range = (old_milestones + 1)..new_milestones
 
-      last_flushed_time = for milestone <- milestone_range, reduce: 0 do
-        _acc ->
+      updated_socket =
+        Enum.reduce(milestone_range, socket, fn milestone, acc_socket ->
           boundary = milestone * 600
-          process_transcript_chunk(socket, visible_segments, socket.assigns.last_flushed_time, boundary, false)
-          boundary
-      end
+          chunk_string = process_transcript_chunk(acc_socket, visible_segments, acc_socket.assigns.last_flushed_time, boundary, false)
 
-      socket
+          if is_binary(chunk_string) do
+            current_visible_timestamps = acc_socket.assigns[:visible_timestamps] || []
+            new_visible_timestamps = current_visible_timestamps ++ [chunk_string]
+
+            acc_socket
+            |> assign(:visible_timestamps, new_visible_timestamps)
+            |> assign(:last_flushed_time, boundary)
+          else
+            acc_socket
+          end
+        end)
+
+      updated_socket
       |> assign(:milestones_printed, new_milestones)
-      |> assign(:last_flushed_time, last_flushed_time)
     else
       socket
     end
@@ -315,11 +360,16 @@ defmodule FileUploaderWeb.UploadLive do
 
     if final_time > last_flushed_time do
       # TODO: let process_transcript_chunk know this is the final chunk
-      process_transcript_chunk(socket, socket.assigns.transcript_segments, last_flushed_time, final_time, true)
+      timestamps = process_transcript_chunk(socket, socket.assigns.transcript_segments, last_flushed_time, final_time, true)
       IO.puts("Flushed final chunk from ~#{last_flushed_time} to ~#{final_time} seconds.")
+      IO.inspect(timestamps)
+
+      current_visible_timestamps = socket.assigns[:visible_timestamps] || []
+      new_visible_timestamps = current_visible_timestamps ++ [timestamps]
 
       socket
       |> assign(:last_flushed_time, final_time)
+      |> assign(:visible_timestamps, new_visible_timestamps)
     else
       socket
     end
@@ -327,97 +377,93 @@ defmodule FileUploaderWeb.UploadLive do
 
   # This one will be called for one-shotting the timestamps
   # It pattern matches when the chunk is the final one and  0 milestone were flushed
-  defp process_transcript_chunk(%{assigns: %{milestones_printed: 0}} = socket, segments, _from, _to, true) do
-    IO.puts("About to process first and final transcript chunk via process_transcript_chunk")
+  defp process_transcript_chunk(
+       %{assigns: %{milestones_printed: milestones}} = socket,
+       segments,
+       from_seconds,
+       to_seconds,
+       is_final
+     ) do
+    IO.puts("process_transcript_chunk called: from #{from_seconds} to #{to_seconds} (final? #{is_final})")
 
-    # Joins all segment texts into the following format
-    # [HH:MM:SS] Transcript text
-    # [HH:MM:SS] 2nd Transcript text
-    output = segments
-    |> Enum.map_join("\n", & "#{TimeFormatter.format_seconds_llm(&1.text_start_time)} #{&1.text}")
-
-    {system_prompt, user_prompt} = FileUploader.OpenAI.one_shot_prompt_template(output)
-    llm_messages = [
-      %{role: "system", content: system_prompt},
-      %{role: "user", content: user_prompt}
-    ]
-    {:ok, %{body: llm_response}} = FileUploader.OpenAI.chat_completion(%{
-      model: "gpt-4o-mini",
-      messages: llm_messages
-    })
-    IO.puts("FLUSHING first and final transcript chunk:")
-    IO.inspect(llm_messages)
-    IO.inspect(llm_response)
-  end
-
-  defp process_transcript_chunk(%{assigns: %{milestones_printed: 0}} = socket, segments, from_seconds, to_seconds, is_final) do
-    IO.puts("first process_transcript_chunk: from #{from_seconds} to #{to_seconds}")
-    # Get segments that fall within our time window
+    # 1. Decide which segments to include.
     chunk_segments =
-      segments
-      |> Enum.filter(fn seg ->
-        seg.text_start_time >= from_seconds and seg.text_start_time <= to_seconds
-      end)
+      cond do
+        is_final and milestones == 0 ->
+          # "First and final" scenario: take them all
+          segments
 
-    # Joins all segment texts into the following format
-    # [HH:MM:SS] Transcript text
-    # [HH:MM:SS] 2nd Transcript text
-    output = chunk_segments
-    |> Enum.map_join("\n", & "#{TimeFormatter.format_seconds_llm(&1.text_start_time)} #{&1.text}")
+        true ->
+          # Otherwise, standard chunking by from/to
+          Enum.filter(segments, fn seg ->
+            seg.text_start_time >= from_seconds and seg.text_start_time <= to_seconds
+          end)
+      end
 
-    first_chunk_time_start = TimeFormatter.format_seconds_llm(List.first(chunk_segments).text_start_time, false)
-    last_chunk_time_start = TimeFormatter.format_seconds_llm(List.last(chunk_segments).text_start_time, false)
+    # 2. Handle a possible empty chunk.
+    if chunk_segments == [] do
+      IO.puts("No segments found in this chunk. Skipping processing...")
+      # Return the socket unchanged in this example
+      socket
+    else
+      # 3. Build the final text output that we'll feed to the prompt.
+      output =
+        chunk_segments
+        |> Enum.map_join("\n", fn seg ->
+          "[#{TimeFormatter.format_seconds_llm(seg.text_start_time)}] #{seg.text}"
+        end)
 
-    {system_prompt, user_prompt} = FileUploader.OpenAI.first_transcript_prompt_template(output, first_chunk_time_start, last_chunk_time_start)
-    llm_messages = [
-      %{role: "system", content: system_prompt},
-      %{role: "user", content: user_prompt}
-    ]
-    {:ok, %{body: llm_response}} = FileUploader.OpenAI.chat_completion(%{
-      model: "gpt-4o-mini",
-      messages: llm_messages
-    })
+      # 4. Choose which prompt template to use.
+      {system_prompt, user_prompt} =
+        case {milestones, is_final} do
+          {0, true} ->
+            IO.puts("About to process first AND final transcript chunk.")
+            FileUploader.OpenAI.one_shot_prompt_template(output)
 
-    # Output the chunk with timestamp information
-    IO.puts("FLUSHING partial transcript from #{from_seconds} to #{to_seconds} seconds:")
-    IO.inspect(llm_messages)
-    IO.inspect(llm_response)
+          {0, false} ->
+            IO.puts("Processing first chunk of the transcript.")
+            first_start = TimeFormatter.format_seconds_llm(List.first(chunk_segments).text_start_time, false)
+            last_start  = TimeFormatter.format_seconds_llm(List.last(chunk_segments).text_start_time, false)
+            FileUploader.OpenAI.first_transcript_prompt_template(output, first_start, last_start)
+
+          {_, _} ->
+            IO.puts("Processing nth chunk of the transcript.")
+            first_start = TimeFormatter.format_seconds_llm(List.first(chunk_segments).text_start_time, false)
+            last_start  = TimeFormatter.format_seconds_llm(List.last(chunk_segments).text_start_time, false)
+            FileUploader.OpenAI.nth_transcript_prompt_template(output, first_start, last_start)
+        end
+
+      # 5. Send to the LLM.
+      llm_messages = [
+        %{role: "system", content: system_prompt},
+        %{role: "user", content: user_prompt}
+      ]
+
+      {:ok, %{body: llm_response}} =
+        FileUploader.OpenAI.chat_completion(%{
+          model: "gpt-4o-mini",
+          messages: llm_messages
+        })
+
+      %{
+        "choices" => [
+          %{"message" => %{"content" => content}}
+        ]
+      } = llm_response
+
+      # 6. Log the final result
+      IO.puts("Received content: #{content}")
+      IO.puts("FLUSHING transcript (from=#{from_seconds}, to=#{to_seconds}, final?=#{is_final}):")
+      IO.inspect(llm_messages)
+      IO.inspect(llm_response)
+
+      # 7. Update the socket, appending the LLM content to `:visible_timestamps`.
+      #
+      #    If you prefer to *prepend*, you can do `[content | &1]` instead.
+      content
+    end
   end
 
-
-  defp process_transcript_chunk(%{assigns: %{milestones_printed: milestones}} = socket, segments, from_seconds, to_seconds, is_final) do
-    IO.puts("nth process_transcript_chunk: from #{from_seconds} to #{to_seconds}")
-    # Get segments that fall within our time window
-    chunk_segments =
-      segments
-      |> Enum.filter(fn seg ->
-        seg.text_start_time >= from_seconds and seg.text_start_time <= to_seconds
-      end)
-
-    # Joins all segment texts into the following format
-    # [HH:MM:SS] Transcript text
-    # [HH:MM:SS] 2nd Transcript text
-    output = chunk_segments
-    |> Enum.map_join("\n", & "#{TimeFormatter.format_seconds_llm(&1.text_start_time)} #{&1.text}")
-
-    first_chunk_time_start = TimeFormatter.format_seconds_llm(List.first(chunk_segments).text_start_time, false)
-    last_chunk_time_start = TimeFormatter.format_seconds_llm(List.last(chunk_segments).text_start_time, false)
-
-    {system_prompt, user_prompt} = FileUploader.OpenAI.nth_transcript_prompt_template(output, first_chunk_time_start, last_chunk_time_start)
-    llm_messages = [
-      %{role: "system", content: system_prompt},
-      %{role: "user", content: user_prompt}
-    ]
-    {:ok, %{body: llm_response}} = FileUploader.OpenAI.chat_completion(%{
-      model: "gpt-4o-mini",
-      messages: llm_messages
-    })
-
-    # Output the chunk with timestamp information
-    IO.puts("FLUSHING partial transcript from #{from_seconds} to #{to_seconds} seconds:")
-    IO.inspect(llm_messages)
-    IO.inspect(llm_response)
-  end
 
    # Given a list of indexes (already sorted), find the largest consecutive run
   # starting at 1. For example:
